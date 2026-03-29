@@ -1,0 +1,182 @@
+Symbol,Sector,Raw_Sector,Raw_Industry
+ABSLAMC.NS,NBFC,Financial Services,Asset Management
+ACE.NS,Infra,Industrials,Farm & Heavy Construction Machinery
+AEGISLOG.NS,Energy,Energy,Oil & Gas Refining & Marketing
+AETHER.NS,Chemicals,Basic Materials,Specialty Chemicals
+AFFLE.NS,Media,Communication Services,Advertising Agencies
+ALKYLAMINE.NS,Chemicals,Basic Materials,Specialty Chemicals
+ALLCARGO.NS,Logistics,Industrials,Integrated Freight & Logistics
+ALOKINDS.NS,Textiles,Consumer Cyclical,Textile Manufacturing
+AMBER.NS,Consumer Durables,Consumer Cyclical,"Furnishings, Fixtures & Appliances"
+ANANTRAJ.NS,Realty,Real Estate,Real Estate - Development
+ANGELONE.NS,NBFC,Financial Services,Capital Markets
+ANURAS.NS,Chemicals,Basic Materials,Specialty Chemicals
+ARE&M.NS,Capital Goods,Industrials,Electrical Equipment & Parts
+ARVIND.NS,Textiles,Consumer Cyclical,Textile Manufacturing
+ASAHIINDIA.NS,Auto,Consumer Cyclical,Auto Parts
+ASTERDM.NS,Healthcare,Healthcare,Medical Care Facilities
+ASTRAZEN.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+AUBANK.NS,Banking,Financial Services,Banks - Regional
+AVAS.NS,General,Unknown,Unknown
+AWL.NS,FMCG,Consumer Defensive,Packaged Foods
+AZAD.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+BAJAJELEC.NS,Consumer Durables,Consumer Cyclical,"Furnishings, Fixtures & Appliances"
+BALAMINES.NS,Chemicals,Basic Materials,Specialty Chemicals
+BALRAMCHIN.NS,General,Consumer Defensive,Confectioners
+BANSALWIRE.NS,Metals,Basic Materials,Steel
+BCG.NS,Media,Communication Services,Advertising Agencies
+BEML.NS,General,Industrials,Conglomerates
+BIKAJI.NS,FMCG,Consumer Defensive,Packaged Foods
+BIRLACORPN.NS,General,Basic Materials,Building Materials
+BLS.NS,Services,Industrials,Specialty Business Services
+BLUEJET.NS,Pharma,Healthcare,Biotechnology
+BORORENEW.NS,IT,Technology,Solar
+BRIGADE.NS,Realty,Real Estate,Real Estate - Development
+BSOFT.NS,IT,Technology,Information Technology Services
+CAMS.NS,IT,Technology,Information Technology Services
+CAMPUS.NS,Textiles,Consumer Cyclical,Footwear & Accessories
+CASTROLIND.NS,Energy,Energy,Oil & Gas Refining & Marketing
+CEATLTD.NS,Auto,Consumer Cyclical,Auto Parts
+CENTRALBK.NS,Banking,Financial Services,Banks - Regional
+CENTURYPLY.NS,General,Basic Materials,Lumber & Wood Production
+CENTURYTEX.NS,General,Unknown,Unknown
+CERA.NS,General,Industrials,Building Products & Equipment
+CHALET.NS,Services,Consumer Cyclical,Lodging
+CHENNPETRO.NS,Energy,Energy,Oil & Gas Refining & Marketing
+CIEINDIA.NS,Auto,Consumer Cyclical,Auto Parts
+CLEAN.NS,Chemicals,Basic Materials,Specialty Chemicals
+COCHINSHIP.NS,Defense,Industrials,Aerospace & Defense
+COSMOFIRST.NS,General,Consumer Cyclical,Packaging & Containers
+CRAFTSMAN.NS,Auto,Consumer Cyclical,Auto Parts
+DATA-PATTERNS.NS,General,Unknown,Unknown
+DATAPATTNS.NS,Defense,Industrials,Aerospace & Defense
+DBL.NS,Infra,Industrials,Engineering & Construction
+DCMSHRIRAM.NS,General,Industrials,Conglomerates
+DEEPAKFERT.NS,Chemicals,Basic Materials,Chemicals
+DOMS.NS,General,Industrials,Business Equipment & Supplies
+ECLERX.NS,IT,Technology,Information Technology Services
+EIDPARRY.NS,General,Basic Materials,Agricultural Inputs
+ELGIEQUIP.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+ENGINERSIN.NS,Infra,Industrials,Engineering & Construction
+EQUITASBNK.NS,Banking,Financial Services,Banks - Regional
+ERIS.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+ESAFSFB.NS,Banking,Financial Services,Banks - Regional
+FDC.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+FIVESTAR.NS,NBFC,Financial Services,Credit Services
+FLUOROCHEM.NS,Chemicals,Basic Materials,Specialty Chemicals
+FSL.NS,IT,Technology,Information Technology Services
+GABRIEL.NS,Auto,Consumer Cyclical,Auto Parts
+GANESHHOUC.NS,General,Unknown,Unknown
+GARTEN.NS,General,Unknown,Unknown
+GATEWAY.NS,Logistics,Industrials,Integrated Freight & Logistics
+GENUSPOWER.NS,Capital Goods,Industrials,Electrical Equipment & Parts
+GEOJITFSL.NS,NBFC,Financial Services,Capital Markets
+GLS.NS,General,Unknown,Unknown
+GNA.NS,Auto,Consumer Cyclical,Auto Parts
+GNFC.NS,Chemicals,Basic Materials,Chemicals
+GOCOLORS.NS,Textiles,Consumer Cyclical,Apparel Retail
+GPIL.NS,Metals,Basic Materials,Steel
+GPPL.NS,Logistics,Industrials,Marine Shipping
+GRAVITA.NS,General,Industrials,Metal Fabrication
+GRSE.NS,Defense,Industrials,Aerospace & Defense
+GSFC.NS,General,Basic Materials,Agricultural Inputs
+GULFOILLUB.NS,Chemicals,Basic Materials,Specialty Chemicals
+HAPPYFORGE.NS,General,Industrials,Metal Fabrication
+HBLPOWER.NS,General,Unknown,Unknown
+HCC.NS,Infra,Industrials,Engineering & Construction
+HEG.NS,Capital Goods,Industrials,Electrical Equipment & Parts
+HERITGFOOD.NS,FMCG,Consumer Defensive,Packaged Foods
+HGINFRA.NS,Infra,Industrials,Engineering & Construction
+HIKAL.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+HINDWAREAP.NS,Consumer Durables,Consumer Cyclical,"Furnishings, Fixtures & Appliances"
+HOMEFIRST.NS,NBFC,Financial Services,Mortgage Finance
+HONASA.NS,FMCG,Consumer Defensive,Household & Personal Products
+IOPL.NS,General,Unknown,Unknown
+IRB.NS,Infra,Industrials,Infrastructure Operations
+IRCON.NS,Infra,Industrials,Engineering & Construction
+ITI.NS,IT,Technology,Communication Equipment
+ITDC.NS,Services,Consumer Cyclical,Lodging
+J&KBANK.NS,Banking,Financial Services,Banks - Regional
+JAGRAN.NS,General,Communication Services,Publishing
+JAIBALAJI.NS,Metals,Basic Materials,Steel
+JINDALSAW.NS,Metals,Basic Materials,Steel
+JKPAPER.NS,Paper,Basic Materials,Paper & Paper Products
+JWL.NS,Logistics,Industrials,Railroads
+JYOTICNC.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+KAYNES.NS,IT,Technology,Electronic Components
+KEC.NS,Infra,Industrials,Engineering & Construction
+KIMS.NS,Healthcare,Healthcare,Medical Care Facilities
+Kirloskar.NS,General,Unknown,Unknown
+KNRCON.NS,Infra,Industrials,Engineering & Construction
+KRBL.NS,FMCG,Consumer Defensive,Packaged Foods
+KSB.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+LATENTVIEW.NS,Services,Industrials,Consulting Services
+LEMONTREE.NS,Services,Consumer Cyclical,Lodging
+LXCHEM.NS,Chemicals,Basic Materials,Specialty Chemicals
+MAHLOG.NS,Logistics,Industrials,Integrated Freight & Logistics
+MAPMYINDIA.NS,IT,Technology,Software - Infrastructure
+MASTEK.NS,IT,Technology,Information Technology Services
+MHRIL.NS,General,Consumer Cyclical,Resorts & Casinos
+MINDACORP.NS,Auto,Consumer Cyclical,Auto Parts
+MMTC.NS,General,Industrials,Conglomerates
+MSTCLTD.NS,General,Industrials,Conglomerates
+MTARTECH.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+NCC.NS,Infra,Industrials,Engineering & Construction
+NETWEB.NS,IT,Technology,Computer Hardware
+NETWORK18.NS,Media,Communication Services,Entertainment
+NOCIL.NS,Chemicals,Basic Materials,Specialty Chemicals
+NURECA.NS,Healthcare,Healthcare,Medical Devices
+ORCHPHARMA.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+ORIENTELEC.NS,Consumer Durables,Consumer Cyclical,"Furnishings, Fixtures & Appliances"
+PARAS.NS,Defense,Industrials,Aerospace & Defense
+PCBL.NS,Chemicals,Basic Materials,Specialty Chemicals
+PPLPHARMA.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+PRICOLLTD.NS,Auto,Consumer Cyclical,Auto Parts
+PRUDENT.NS,NBFC,Financial Services,Asset Management
+PUNJABCHEM.NS,Chemicals,Basic Materials,Chemicals
+RAIN.NS,Chemicals,Basic Materials,Specialty Chemicals
+RAYMOND.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+RCF.NS,General,Basic Materials,Agricultural Inputs
+RELIANCEP.NS,General,Unknown,Unknown
+RHIM.NS,General,Industrials,Metal Fabrication
+RITES.NS,Infra,Industrials,Engineering & Construction
+ROLEXTURBO.NS,General,Unknown,Unknown
+ROSSARI.NS,Chemicals,Basic Materials,Specialty Chemicals
+ROUTE.NS,Telecom,Communication Services,Telecom Services
+RTNINDIA.NS,Retail,Consumer Cyclical,Internet Retail
+SANOFI.NS,Pharma,Healthcare,Drug Manufacturers - General
+SAPPHIRE.NS,Services,Consumer Cyclical,Restaurants
+SARDAEN.NS,Metals,Basic Materials,Steel
+SDBL.NS,FMCG,Consumer Defensive,Beverages - Brewers
+SHARDACROP.NS,General,Basic Materials,Agricultural Inputs
+SHOPERSTOP.NS,Retail,Consumer Cyclical,Department Stores
+SHYAMMETL.NS,Metals,Basic Materials,Steel
+SIGACHI.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+SOUTHBANK.NS,Banking,Financial Services,Banks - Regional
+SPARC.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+STERTOOLS.NS,General,Industrials,Tools & Accessories
+SUBROS.NS,Auto,Consumer Cyclical,Auto Parts
+SUNTECK.NS,Realty,Real Estate,Real Estate - Development
+SUPRIYA.NS,Pharma,Healthcare,Biotechnology
+TATAINVEST.NS,NBFC,Financial Services,Capital Markets
+TDPOWERSYS.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+TEJASNET.NS,IT,Technology,Communication Equipment
+TEXRAIL.NS,Logistics,Industrials,Railroads
+THOMASCOOK.NS,Services,Consumer Cyclical,Travel Services
+TV18BRDCST.NS,General,Unknown,Unknown
+UJJIVANSFB.NS,Banking,Financial Services,Banks - Regional
+USHAMART.NS,Metals,Basic Materials,Steel
+UTIAMC.NS,NBFC,Financial Services,Asset Management
+VAIBHAVGBL.NS,General,Consumer Cyclical,Luxury Goods
+VAKRANGEE.NS,IT,Technology,Information Technology Services
+VARROC.NS,Auto,Consumer Cyclical,Auto Parts
+VENKEYS.NS,General,Consumer Defensive,Farm Products
+VESUVIUS.NS,Capital Goods,Industrials,Specialty Industrial Machinery
+VIJAYA.NS,General,Healthcare,Diagnostics & Research
+VIPIND.NS,Textiles,Consumer Cyclical,Footwear & Accessories
+VSTIND.NS,FMCG,Consumer Defensive,Tobacco
+WELCORP.NS,Metals,Basic Materials,Steel
+WELSPUNLIV.NS,Textiles,Consumer Cyclical,Textile Manufacturing
+WESTLIFE.NS,Services,Consumer Cyclical,Restaurants
+WOCKPHARMA.NS,Pharma,Healthcare,Drug Manufacturers - Specialty & Generic
+ZENTEC.NS,Defense,Industrials,Aerospace & Defense
