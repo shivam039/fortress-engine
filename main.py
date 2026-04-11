@@ -1,9 +1,9 @@
 # engine/main.py
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict
 import pandas as pd
 import uvicorn
 import sys
@@ -19,10 +19,10 @@ from stock_scanner.logic import (
     DEFAULT_SCORING_CONFIG
 )
 from stock_scanner.ui import generate_action_link
-from mf_lab.logic import run_full_mf_scan, fetch_nav_history
+from mf_lab.logic import run_full_mf_scan
 from commodities.logic import build_commodities_frame
 from options_algo.logic import get_available_expiries, fetch_option_chain
-from fortress_config import TICKER_GROUPS, OPTIONS_UNDERLYINGS
+from fortress_config import TICKER_GROUPS
 
 import traceback
 import logging
@@ -32,6 +32,51 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fortress-api")
 
 app = FastAPI(title="Fortress API", version="2.0")
+
+
+def _build_sector_pulse_records(df: pd.DataFrame):
+    if df.empty:
+        return []
+
+    required_columns = {"Sector", "Velocity", "Above_EMA200", "Score"}
+    if not required_columns.issubset(df.columns):
+        return []
+
+    sector_stats = df.groupby("Sector").agg({
+        "Velocity": "mean",
+        "Above_EMA200": "mean",
+        "Score": "mean"
+    }).reset_index()
+
+    sector_stats["Breadth"] = (sector_stats["Above_EMA200"] * 100).round(1)
+    sector_stats["Avg_Score"] = sector_stats["Score"].round(1)
+    sector_stats["Velocity"] = sector_stats["Velocity"].round(2)
+
+    def get_thesis(row):
+        if row["Avg_Score"] > 75 and row["Velocity"] > 0:
+            return "🐂 Bullish Accumulation"
+        if row["Avg_Score"] < 35 and row["Breadth"] < 40:
+            return "❄️ Structural Weakness"
+        if row["Velocity"] > 2:
+            return "🚀 High Momentum"
+        return "⚖️ Neutral / Rotation"
+
+    sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
+
+    def check_rise(row):
+        if row["Velocity"] > 0 and row["Breadth"] > 70:
+            return "🔥 YES"
+        return ""
+
+    def check_fall(row):
+        if row["Velocity"] < 0 or row["Breadth"] < 40:
+            return "❄️ YES"
+        return ""
+
+    sector_stats["On_the_Rise"] = sector_stats.apply(check_rise, axis=1)
+    sector_stats["On_the_Fall"] = sector_stats.apply(check_fall, axis=1)
+
+    return sector_stats.to_dict(orient="records")
 
 @app.middleware("http")
 async def catch_exceptions_middleware(request, call_next):
@@ -102,7 +147,7 @@ async def run_scan(req: ScanRequest):
             print(f"Error scanning {ticker}: {e}")
             
     if not results:
-        return {"results": [], "summary": "No tickers met criteria"}
+        return []
     
     df = pd.DataFrame(results)
     scoring_config = DEFAULT_SCORING_CONFIG.copy()
@@ -146,45 +191,7 @@ async def get_sector_pulse(universe: str = "Nifty 50"):
     df = pd.DataFrame(results)
     df = apply_advanced_scoring(df)
     
-    if "Sector" not in df.columns or "Velocity" not in df.columns:
-        return []
-
-    sector_stats = df.groupby("Sector").agg({
-        "Velocity": "mean",
-        "Above_EMA200": "mean",
-        "Score": "mean"
-    }).reset_index()
-
-    sector_stats["Breadth"] = (sector_stats["Above_EMA200"] * 100).round(1)
-    sector_stats["Avg_Score"] = sector_stats["Score"].round(1)
-    sector_stats["Velocity"] = sector_stats["Velocity"].round(2)
-    
-    # Thesis Generation
-    def get_thesis(row):
-        if row["Score"] > 75 and row["Velocity"] > 0:
-            return "🐂 Bullish Accumulation"
-        elif row["Score"] < 35 and row["Breadth"] < 40:
-            return "❄️ Structural Weakness"
-        elif row["Velocity"] > 2:
-            return "🚀 High Momentum"
-        else:
-            return "⚖️ Neutral / Rotation"
-
-    sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
-
-    # Classification
-    def check_rise(row):
-        if row['Velocity'] > 0 and row['Breadth'] > 70: return "🔥 YES"
-        return ""
-
-    def check_fall(row):
-        if row['Velocity'] < 0 or row['Breadth'] < 40: return "❄️ YES"
-        return ""
-
-    sector_stats['On_the_Rise'] = sector_stats.apply(check_rise, axis=1)
-    sector_stats['On_the_Fall'] = sector_stats.apply(check_fall, axis=1)
-    
-    return sector_stats.to_dict(orient="records")
+    return _build_sector_pulse_records(df)
 
 @app.get("/api/options/expiries")
 async def get_expiries(symbol: str = Query("^NSEI")):
