@@ -21,7 +21,8 @@ from stock_scanner.logic import (
 from stock_scanner.ui import generate_action_link
 from mf_lab.logic import run_full_mf_scan, fetch_nav_history
 from commodities.logic import build_commodities_frame
-from fortress_config import TICKER_GROUPS
+from options_algo.logic import get_available_expiries, fetch_option_chain
+from fortress_config import TICKER_GROUPS, OPTIONS_UNDERLYINGS
 
 import traceback
 import logging
@@ -184,6 +185,26 @@ async def get_sector_pulse(universe: str = "Nifty 50"):
     sector_stats['On_the_Fall'] = sector_stats.apply(check_fall, axis=1)
     
     return sector_stats.to_dict(orient="records")
+
+@app.get("/api/options/expiries")
+async def get_expiries(symbol: str = Query("^NSEI")):
+    expiries = get_available_expiries(symbol)
+    return {"expiries": expiries}
+
+@app.get("/api/options/chain")
+async def get_chain(symbol: str, expiry: str):
+    try:
+        chain_df, spot, t = fetch_option_chain(symbol, expiry)
+        if chain_df.empty:
+            return {"results": [], "spot": spot, "t": t}
+        return {
+            "results": chain_df.to_dict(orient="records"),
+            "spot": spot,
+            "t": t
+        }
+    except Exception as e:
+        logger.error(f"Error fetching options chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/mf-analysis")
 async def get_mf_analysis(limit: Optional[int] = Query(None)):

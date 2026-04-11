@@ -1,0 +1,36 @@
+name: Sync to Hugging Face
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Add Hugging Face remote
+        run: |
+          git remote add hf https://huggingface.co/spaces/shivam039-dev/fortress-engine 2>/dev/null || true
+          git remote set-url hf https://user:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/shivam039-dev/fortress-engine
+
+      - name: Force push to Hugging Face
+        run: |
+          git push hf main --force
+
+      - name: Verify sync
+        run: |
+          echo "✓ Successfully synced to Hugging Face"
+          git log --oneline -1
