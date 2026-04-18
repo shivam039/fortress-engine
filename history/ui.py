@@ -186,7 +186,7 @@ def _display_pick_table(title: str, df: pd.DataFrame, selected_label: str, searc
             display_cols = [c for c in df.columns if c not in {"id", "scan_id", "raw_data"}]
 
         table_df = df[display_cols]
-        st.dataframe(table_df, use_container_width=True, hide_index=True)
+        st.dataframe(table_df, width='stretch', hide_index=True)
         st.download_button(
             f"📥 Export {title} CSV",
             table_df.to_csv(index=False).encode("utf-8"),
@@ -263,7 +263,7 @@ def render():
                 combined.to_csv(index=False).encode("utf-8"),
                 f"scan_history_combined_{selected_label.replace(':', '-')}.csv",
                 "text/csv",
-                use_container_width=True
+                width='stretch'
             )
         with col2:
             pass
@@ -276,7 +276,7 @@ def render():
             bt_results = backtest_top_picks(selected_timestamp_str)
             if not bt_results.empty:
                 st.success("Backtest complete!")
-                st.dataframe(bt_results, use_container_width=True)
+                st.dataframe(bt_results, width='stretch')
                 st.download_button(
                     "📥 Download Backtest Results",
                     bt_results.to_csv(index=False).encode("utf-8"),
@@ -294,13 +294,13 @@ def render():
             with st.spinner("Fetching data..."):
                 full_df = get_full_scan_history(limit=1000)
                 if not full_df.empty:
-                    st.dataframe(full_df.head(5), use_container_width=True)
+                    st.dataframe(full_df.head(5), width='stretch')
                     st.download_button(
                         "📥 Download Full History (Last 1000)",
                         full_df.to_csv(index=False).encode("utf-8"),
                         f"full_scan_history_last1000_{datetime.now().strftime('%Y%m%d')}.csv",
                         "text/csv",
-                        use_container_width=True
+                        width='content'
                     )
                 else:
                     st.warning("No history data found.")

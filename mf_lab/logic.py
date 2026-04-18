@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # ── In-process caches ────────────────────────────────────────────────────────
 _BENCH_CACHE: Dict[str, pd.Series] = {}
-_DISCOVERY_CACHE: Optional[List[str]] = None   # refreshed once per process
+_DISCOVERY_CACHE: Optional[Dict[str, str]] = None   # refreshed once per process
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -49,13 +49,46 @@ def _retry(op, name: str, retries: int = 2, base_delay: float = 0.5):
     raise RuntimeError(f"{name} failed") from last
 
 
-def classify_category(name: str) -> str:
+def classify_category(name: str) -> tuple[str, str]:
     nm = (name or "").lower()
-    if any(k in nm for k in ["liquid", "bond", "gilt", "debt", "duration"]):
-        return "Debt"
-    if any(k in nm for k in ["hybrid", "balanced", "asset allocation"]):
-        return "Hybrid"
-    return "Equity"
+    
+    # Debt Subcategories
+    if any(k in nm for k in ["liquid"]): sub = "Liquid"
+    elif any(k in nm for k in ["money market"]): sub = "Money Market"
+    elif any(k in nm for k in ["overnight", "1 d"]): sub = "Overnight"
+    elif any(k in nm for k in ["gilt"]): sub = "Gilt"
+    elif any(k in nm for k in ["credit risk"]): sub = "Credit Risk"
+    elif any(k in nm for k in ["duration", "short term", "ultra short"]): sub = "Duration/Short Term"
+    elif any(k in nm for k in ["bond", "debt", "income"]): sub = "Corporate/Dynamic Bond"
+    else: sub = "General Debt"
+    
+    # Equity Subcategories
+    if any(k in nm for k in ["elss", "tax saver"]): eq_sub = "ELSS (Tax Saver)"
+    elif any(k in nm for k in ["small cap", "smallcap"]): eq_sub = "Small Cap"
+    elif any(k in nm for k in ["mid cap", "midcap"]): eq_sub = "Mid Cap"
+    elif any(k in nm for k in ["large cap", "largecap", "bluechip", "top 100"]): eq_sub = "Large Cap"
+    elif any(k in nm for k in ["flexi", "multi cap", "multicap"]): eq_sub = "Flexi/Multi Cap"
+    elif any(k in nm for k in ["focused"]): eq_sub = "Focused"
+    elif any(k in nm for k in ["value", "contra"]): eq_sub = "Value/Contra"
+    elif any(k in nm for k in ["dividend yield"]): eq_sub = "Dividend Yield"
+    elif any(k in nm for k in ["index", "nifty"]): eq_sub = "Index Fund"
+    else: eq_sub = "Sectoral/General Equity"
+    
+    # Hybrid Subcategories
+    if any(k in nm for k in ["arbitrage"]): hy_sub = "Arbitrage"
+    elif any(k in nm for k in ["balanced advantage", "dynamic asset", "baa"]): hy_sub = "Balanced Advantage"
+    elif any(k in nm for k in ["aggressive hybrid", "equity hybrid"]): hy_sub = "Aggressive Hybrid"
+    elif any(k in nm for k in ["conservative hybrid", "debt hybrid"]): hy_sub = "Conservative Hybrid"
+    elif any(k in nm for k in ["multi asset"]): hy_sub = "Multi Asset"
+    else: hy_sub = "General Hybrid"
+    
+    # Determine Primary Cat
+    if any(k in nm for k in ["liquid", "bond", "gilt", "debt", "duration", "overnight", "money market", "credit risk", "income"]):
+        return ("Debt", sub)
+    if any(k in nm for k in ["hybrid", "balanced", "asset allocation", "arbitrage", "advantage"]):
+        return ("Hybrid", hy_sub)
+    
+    return ("Equity", eq_sub)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -237,7 +270,8 @@ def _score_fund(code: str, bench_default: pd.Series) -> Optional[Dict[str, Any]]
 def discover_all_funds(limit: Optional[int] = None) -> List[str]:
     global _DISCOVERY_CACHE
     if _DISCOVERY_CACHE is not None:
-        return _DISCOVERY_CACHE[:limit] if limit else _DISCOVERY_CACHE
+        codes = list(_DISCOVERY_CACHE.keys())
+        return codes[:limit] if limit else codes
 
     try:
         resp = requests.get("https://api.mfapi.in/mf", timeout=20)
@@ -248,17 +282,18 @@ def discover_all_funds(limit: Optional[int] = None) -> List[str]:
         debt_kw   = ["liquid", "gilt", "bond", "duration", "overnight", "corporate"]
         all_kw    = equity_kw + debt_kw
 
-        codes = []
+        codes_map = {}
         for s in schemes:
             name = s["schemeName"].lower()
             if not all(r in name for r in ["direct", "growth"]):  continue
             if not any(k in name for k in all_kw):               continue
             if any(e in name for e in ["regular", "idcw"]):      continue
             if "etf" in name and not any(k in name for k in debt_kw): continue
-            codes.append(str(s["schemeCode"]))
+            codes_map[str(s["schemeCode"])] = s["schemeName"]
 
-        _DISCOVERY_CACHE = codes
-        logger.info("discover_all_funds: found %d schemes", len(codes))
+        _DISCOVERY_CACHE = codes_map
+        logger.info("discover_all_funds: found %d schemes", len(codes_map))
+        codes = list(codes_map.keys())
         return codes[:limit] if limit else codes
 
     except Exception as e:
@@ -337,7 +372,7 @@ def _score_fund_fast(code: str, bench_default: pd.Series) -> Optional[Dict[str, 
             return None
 
         nav         = float(history["nav"].iloc[-1])
-        scheme_name = f"Scheme {code}"
+        scheme_name = _DISCOVERY_CACHE.get(code, f"Scheme {code}") if _DISCOVERY_CACHE else f"Scheme {code}"
         bench_ticker = INDEX_BENCHMARKS.get("Nifty 50", "^NSEI")
         nm = scheme_name.lower()
         if "small cap" in nm or "smallcap" in nm:
@@ -371,9 +406,12 @@ def _score_fund_fast(code: str, bench_default: pd.Series) -> Optional[Dict[str, 
         sharpe   = ((ret.mean()*252) - 0.06) / (ret.std()*np.sqrt(252) + 1e-9)
         sortino  = ((ret.mean()*252) - 0.06) / (ret[ret<0].std()*np.sqrt(252) + 1e-9)
         roll_std = ret.rolling(21).std().mean() * np.sqrt(252) * 100
+        
+        primary_cat, sub_cat = classify_category(scheme_name)
 
         return {
             "Scheme Code": code, "Scheme": scheme_name, "NAV": nav,
+            "Category": primary_cat, "Sub Category": sub_cat,
             "1Y Return": ret_1y, "3Y Return": ret_3y, "5Y Return": ret_5y,
             "Volatility": vol, "Downside Deviation": downside,
             "Sharpe": sharpe, "Sortino": sortino, "Rolling Std": roll_std,
@@ -429,7 +467,8 @@ def run_full_mf_scan(
         return pd.DataFrame()
 
     df = pd.DataFrame(rows).fillna(0)
-    df["Category"] = df["Scheme"].apply(classify_category)
+    
+    # We already have Primary Cat and Sub Cat inside the dict, drop legacy assignment
     vol_penalty = (df["Volatility"] + df["Downside Deviation"] + df["Rolling Std"]).clip(lower=0)
     raw = (df["Sharpe"] + df["Sortino"] - vol_penalty / 100).fillna(0)
     mn, mx = raw.min(), raw.max()

@@ -11,9 +11,6 @@ from datetime import datetime
 import numpy as np
 import sys
 
-print("Loading stock_scanner.ui ...")
-print(f"sys.path during ui.py load: {sys.path}")
-
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
 from stock_scanner.logic import (
     check_institutional_fortress,
@@ -212,7 +209,7 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
         # Display Dashboard
         st.dataframe(
             sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score", "On the Rise", "On the Fall"]].sort_values("Velocity", ascending=False),
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
                 "Breadth (%)": st.column_config.ProgressColumn("Inst. Breadth", min_value=0, max_value=100, format="%.1f%%"),
@@ -239,20 +236,20 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
 
     if not momentum_picks.empty:
         st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
-        st.dataframe(momentum_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
+        st.dataframe(momentum_picks[display_cols], width='stretch', hide_index=True, column_config=st_column_config)
 
     if not lt_picks.empty:
         st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
-        st.dataframe(lt_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
+        st.dataframe(lt_picks[display_cols], width='stretch', hide_index=True, column_config=st_column_config)
 
     st.markdown("#### 🧪 Backtesting Hooks")
-    if st.button("Run Backtest for This Scan", use_container_width=True):
+    if st.button("Run Backtest for This Scan", width='stretch'):
         if timestamp:
             bt_df = backtest_top_picks(timestamp)
             if bt_df.empty:
                 st.info("No backtest data available for selected scan timestamp.")
             else:
-                st.dataframe(bt_df, use_container_width=True, hide_index=True)
+                st.dataframe(bt_df, width='stretch', hide_index=True)
         else:
              st.info("Scan timestamp not available.")
 
@@ -271,17 +268,17 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
 
     st_column_config = get_column_config(display_cols, broker_choice)
 
-    st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
+    st.dataframe(display_df,width='stretch',height=600,column_config=st_column_config)
 
     if not filtered_out_df.empty:
         with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
             filtered_cols = [c for c in display_cols if c in filtered_out_df.columns]
-            st.dataframe(filtered_out_df[filtered_cols], use_container_width=True, hide_index=True)
+            st.dataframe(filtered_out_df[filtered_cols], width='stretch', hide_index=True)
 
     csv = display_df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Export Trades to CSV",data=csv,
                        file_name=f"Fortress_Trades_{datetime.now().strftime('%Y%m%d')}.csv",
-                       mime="text/csv",use_container_width=True)
+                       mime="text/csv")
 
     # ---------------- HEATMAP ----------------
     if not df.empty and "Score" in df.columns:
@@ -408,7 +405,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
     if pulse_data and "timestamp" in pulse_data:
         btn_label = f"Refresh Market Pulse (Updated: {pulse_data['timestamp']})"
 
-    if st.button(btn_label, type="primary", use_container_width=True):
+    if st.button(btn_label, type="primary", width='stretch'):
         with st.spinner("Updating Market Pulse..."):
             pulse_data = pulse.fetch_market_pulse_data()
             st.session_state["market_pulse_data"] = pulse_data
@@ -447,7 +444,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                     search_cols = [c for c in st.session_state["selected_columns"] if c in search_df.columns]
                     search_config = get_column_config(search_cols, broker_choice)
 
-                    st.dataframe(search_df[search_cols], use_container_width=True, hide_index=True, column_config=search_config)
+                    st.dataframe(search_df[search_cols], width='stretch', hide_index=True, column_config=search_config)
                 else:
                     st.warning(f"Insufficient data or analysis failed for {search_symbol} (Need >210 candles).")
             else:
@@ -457,7 +454,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
 
     # ---------------- MAIN SCAN ----------------
-    execute_scan = st.button("🚀 EXECUTE SYSTEM SCAN", type="primary", use_container_width=True)
+    execute_scan = st.button("🚀 EXECUTE SYSTEM SCAN", type="primary", width='stretch')
 
     if execute_scan:
         tickers = TICKER_GROUPS.get(selected_universe, [])

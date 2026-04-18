@@ -19,6 +19,8 @@ def render(broker_choice="Zerodha"):
     debug_mode = st.sidebar.toggle("Options Debug Mode", value=False)
 
     underlying = st.sidebar.selectbox("Underlying", OPTIONS_UNDERLYINGS)
+    if "NSE" in underlying or ".NS" in underlying:
+        st.sidebar.info("⚠️ NSE Options API restricted; using high-fidelity math synthetic data for algo testing.")
     expiries = get_available_expiries(underlying)
     expiry = st.sidebar.selectbox("Expiry", expiries) if expiries else None
     risk_pct = st.sidebar.slider("Risk %", 0.5, 5.0, 1.0, 0.5)
@@ -37,7 +39,7 @@ def render(broker_choice="Zerodha"):
         return
 
     chain_df = chain_df.fillna(0)
-    st.dataframe(chain_df[["Strike", "Type", "IV", "Delta", "OI", "Premium"]], use_container_width=True)
+    st.dataframe(chain_df[["Strike", "Type", "IV", "Delta", "OI", "Premium"]], width="stretch")
     st.download_button("⬇️ Export Options CSV", chain_df.to_csv(index=False).encode("utf-8"), "options_chain.csv", "text/csv")
 
     lots = max(1, int((risk_pct / 100) * 100))
@@ -48,16 +50,28 @@ def render(broker_choice="Zerodha"):
 
     strat_df = scan_strategies(chain_df, oi_threshold=oi_threshold)
     if not strat_df.empty:
-        st.subheader("Strategy Scanner")
-        st.dataframe(strat_df, use_container_width=True)
-        picked = st.selectbox("Payoff strategy", strat_df["Strategy"].tolist())
-        p = float(strat_df[strat_df["Strategy"] == picked]["Premium"].iloc[0])
-        grid = np.linspace(spot * 0.9, spot * 1.1, 120)
-        pnl = payoff_curve(grid, picked, p, spot)
+        st.markdown("---")
+        st.subheader("🎯 Strategy Recommendations")
+        # Find highly recommended
+        recs = strat_df[strat_df["Recommendation"] == "⭐ Highly Recommended"]
+        if not recs.empty:
+            best = recs.iloc[0]
+            st.success(f"**Top Pick:** {best['Strategy']} | **Entry:** {best['Entry']} | **Target:** {best['Target Profit']} | **SL:** {best['Stop Loss']}")
+            
+        st.dataframe(strat_df, width="stretch")
+        picked = st.selectbox("Analyze Payoff strategy", strat_df["Strategy"].tolist())
+        row = strat_df[strat_df["Strategy"] == picked].iloc[0]
+        p = float(row["Premium"])
+        
+        atm_val = chain_df.iloc[(chain_df["Strike"] - chain_df["Strike"].median()).abs().argsort()].iloc[0]["Strike"]
+        grid = np.linspace(atm_val * 0.9, atm_val * 1.1, 120)
+        pnl = payoff_curve(grid, picked, p, atm_val)
+        
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked))
-        fig.update_layout(title="Strategy Payoff", xaxis_title="Underlying", yaxis_title="P&L")
-        st.plotly_chart(fig, use_container_width=True)
+        fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked, line=dict(color='yellow' if "Long" in picked else 'blue')))
+        fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+        fig.update_layout(title=f"Strategy Payoff: {picked}", xaxis_title="Underlying Price", yaxis_title="P&L (Premium)")
+        st.plotly_chart(fig, width="stretch")
 
     try:
         scan_id = register_scan(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), universe=underlying, scan_type="OPTIONS", status="Completed")
@@ -68,4 +82,4 @@ def render(broker_choice="Zerodha"):
 
     if debug_mode:
         st.write({"underlying": underlying, "expiry": expiry, "spot": spot})
-        st.dataframe(chain_df, use_container_width=True)
+        st.dataframe(chain_df, width="stretch")

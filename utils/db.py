@@ -1,6 +1,7 @@
-print("Loading utils.db ...")
+import functools
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -39,6 +40,18 @@ DB_MODE = "postgres" if "DATABASE_URL" in os.environ else "sqlite"
 logger.info(f"DB mode detected: {DB_MODE}")
 
 DB_NAME = "fortress_history.db"
+
+
+def _encrypt_token(value: str) -> str:
+    from utils.security import encrypt_token
+
+    return encrypt_token(value)
+
+
+def _decrypt_token(value: str) -> str:
+    from utils.security import decrypt_token
+
+    return decrypt_token(value)
 
 
 def _sqlite_connection():
@@ -85,14 +98,19 @@ def _should_retry_db_error(exc: Exception) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
 def _can_use_neon() -> bool:
     if _sqlite_only_mode():
         return False
     try:
-        # Verify configuration and connectivity
+        # Verify configuration is present before trying to connect.
         _ = _get_neon_url()
-        # Optional: We could test connection here, but lazy loading is often better.
-        # However, to maintain existing behavior of fallback if connection fails:
+    except Exception as exc:
+        logger.info("Neon unavailable, falling back to SQLite: %s", exc)
+        return False
+
+    try:
+        # Lazy connectivity check; cache the result to avoid repeated log spam.
         engine = get_db_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -128,6 +146,25 @@ def _exec(sql: str, params: Optional[Dict[str, Any]] = None):
         return
     with _sqlite_connection() as conn:
         conn.execute(sql, params or {})
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
+def _query(sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Execute a query and return results as list of dicts."""
+    if _can_use_neon():
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(sql), params or {}).fetchall()
+            return [dict(row._mapping) for row in result]
+    with _sqlite_connection() as conn:
+        cursor = conn.execute(sql, params or {})
+        columns = [desc[0] for desc in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
 @st.cache_data(ttl=300)
@@ -441,7 +478,8 @@ def fetch_ohlcv_cache(symbol: str, period: str = "5y", max_age_hours: int = 20) 
             ).fetchone()
         if row and row[0]:
             import pandas as pd
-            df = pd.read_json(json.dumps(row[0]), orient="split")
+            import io
+            df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
             df.index = pd.to_datetime(df.index)
             return df
     except Exception as e:
@@ -503,7 +541,8 @@ def fetch_options_chain_cache(symbol: str, expiry: str, max_age_minutes: int = 5
             ).fetchone()
         if row and row[0]:
             import pandas as pd
-            chain_df = pd.read_json(json.dumps(row[0]), orient="split")
+            import io
+            chain_df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
             return {"chain": chain_df, "spot": float(row[1] or 0)}
     except Exception as e:
         logger.error("options_chain_cache fetch error %s/%s: %s", symbol, expiry, e)
@@ -532,17 +571,145 @@ def upsert_options_chain_cache(symbol: str, expiry: str, chain_df: "pd.DataFrame
         logger.error("options_chain_cache upsert error %s/%s: %s", symbol, expiry, e)
 
 
+def _ensure_mf_scheme_catalog_neon():
+    """Create the MF scheme catalog table for monthly caching of 4000+ schemes."""
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS mf_scheme_catalog (
+            scheme_code TEXT PRIMARY KEY,
+            scheme_name TEXT NOT NULL,
+            category TEXT,
+            type TEXT,
+            subcategory TEXT,
+            amc_code TEXT,
+            amc_name TEXT,
+            isin_div_payout TEXT,
+            isin_div_reinvest TEXT,
+            isin_growth TEXT,
+            cached_date DATE DEFAULT CURRENT_DATE
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_type ON mf_scheme_catalog (type)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_category ON mf_scheme_catalog (category)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_cached_date ON mf_scheme_catalog (cached_date DESC)")
+
+
+def _ensure_mf_scheme_batches_neon():
+    """Create the MF scheme batches table for pre-computed type/category statistics."""
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS mf_scheme_batches (
+            type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            scheme_count INT DEFAULT 0,
+            amc_count INT DEFAULT 0,
+            cached_date DATE DEFAULT CURRENT_DATE,
+            PRIMARY KEY (type, category, cached_date)
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_type ON mf_scheme_batches (type)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_category ON mf_scheme_batches (category)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_cached_date ON mf_scheme_batches (cached_date DESC)")
+
+
+def _ensure_app_users_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS app_users (
+            user_id BIGSERIAL PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            full_name TEXT,
+            email TEXT,
+            phone TEXT,
+            password_hash TEXT,
+            account_status TEXT DEFAULT 'Active',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            last_login_at TIMESTAMPTZ
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_app_users_username ON app_users (username)")
+
+
+def _ensure_user_broker_connections_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS user_broker_connections (
+            connection_id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            broker_name TEXT NOT NULL,
+            broker_client_id TEXT,
+            access_token_encrypted TEXT,
+            refresh_token_encrypted TEXT,
+            expires_at TIMESTAMPTZ,
+            connected_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            is_active BOOLEAN DEFAULT TRUE,
+            metadata_json JSONB,
+            UNIQUE (user_id, broker_name)
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_broker_connections_user ON user_broker_connections (user_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_broker_connections_active ON user_broker_connections (is_active)")
+
+
+def _ensure_fortress_orders_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS fortress_orders (
+            order_id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            symbol TEXT NOT NULL,
+            stock_name TEXT,
+            order_type TEXT NOT NULL,
+            quantity NUMERIC NOT NULL,
+            price NUMERIC,
+            status TEXT DEFAULT 'Pending',
+            broker_name TEXT,
+            broker_order_id TEXT,
+            notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_user ON fortress_orders (user_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_status ON fortress_orders (status)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_created_at ON fortress_orders (created_at DESC)")
+
+
 def init_db():
     if _can_use_neon():
+        # Postgres / Neon Path
+        _ensure_app_users_neon()
+        _ensure_user_broker_connections_neon()
+        _ensure_fortress_orders_neon()
         _ensure_scan_history_table_neon()
         _ensure_scan_history_details_neon()
         _ensure_ticker_metadata_neon()
         _ensure_ohlcv_cache_neon()
         _ensure_options_chain_cache_neon()
+        _ensure_mf_scheme_catalog_neon()
+        
+        try:
+            _exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
+        except Exception: pass
+        try:
+            _exec("ALTER TABLE user_broker_connections ADD COLUMN IF NOT EXISTS broker_client_id TEXT")
+        except Exception: pass
+            
+        try:
+            _ensure_mf_scheme_batches_neon()
+        except Exception as e:
+            logger.warning("Failed to create mf_scheme_batches table: %s", e)
+            
         try:
             _ensure_mf_nav_cache_neon()
-        except Exception:
-            pass  # table creation is best-effort
+        except Exception: pass
+
         _exec("""
             CREATE TABLE IF NOT EXISTS mf_scan_results (
                 id          BIGSERIAL PRIMARY KEY,
@@ -554,9 +721,8 @@ def init_db():
                 UNIQUE (scheme_code, scan_date)
             )
         """)
-        _exec("CREATE INDEX IF NOT EXISTS idx_mf_scan_date ON mf_scan_results (scan_date DESC)")
-        _exec(
-            """
+        
+        _exec("""
             CREATE TABLE IF NOT EXISTS scans (
                 scan_id BIGSERIAL PRIMARY KEY,
                 timestamp TIMESTAMPTZ NOT NULL,
@@ -564,10 +730,9 @@ def init_db():
                 scan_type TEXT,
                 status TEXT
             )
-            """
-        )
-        _exec(
-            """
+        """)
+        
+        _exec("""
             CREATE TABLE IF NOT EXISTS scan_entries (
                 id BIGSERIAL PRIMARY KEY,
                 scan_id BIGINT,
@@ -578,30 +743,22 @@ def init_db():
                 price NUMERIC,
                 integrity_label TEXT,
                 drift_status TEXT,
-                drift_message TEXT
+                drift_message TEXT,
+                UNIQUE (scan_id, symbol, scheme_code)
             )
-            """
-        )
-        _exec(
-            """
+        """)
+        
+        _exec("""
             CREATE TABLE IF NOT EXISTS fund_metrics (
                 id BIGSERIAL PRIMARY KEY,
                 scan_id BIGINT,
                 symbol TEXT,
-                alpha NUMERIC,
-                beta NUMERIC,
-                te NUMERIC,
-                sortino NUMERIC,
-                max_dd NUMERIC,
-                win_rate NUMERIC,
-                upside NUMERIC,
-                downside NUMERIC,
-                cagr NUMERIC
+                alpha NUMERIC, beta NUMERIC, te NUMERIC, sortino NUMERIC,
+                max_dd NUMERIC, win_rate NUMERIC, upside NUMERIC, downside NUMERIC, cagr NUMERIC
             )
-            """
-        )
-        _exec(
-            """
+        """)
+
+        _exec("""
             CREATE TABLE IF NOT EXISTS alerts (
                 id BIGSERIAL PRIMARY KEY,
                 scan_id BIGINT,
@@ -611,20 +768,18 @@ def init_db():
                 message TEXT,
                 timestamp TIMESTAMPTZ
             )
-            """
-        )
-        _exec(
-            """
+        """)
+
+        _exec("""
             CREATE TABLE IF NOT EXISTS audit_logs (
                 timestamp TIMESTAMPTZ,
                 action TEXT,
                 universe TEXT,
                 details TEXT
             )
-            """
-        )
-        _exec(
-            """
+        """)
+
+        _exec("""
             CREATE TABLE IF NOT EXISTS algo_trade_log (
                 id BIGSERIAL PRIMARY KEY,
                 timestamp TIMESTAMPTZ NOT NULL,
@@ -634,125 +789,558 @@ def init_db():
                 details TEXT,
                 status TEXT
             )
-            """
+        """)
+        return
+
+    # SQLite / Fallback Path
+    with _sqlite_connection() as conn:
+        c = conn.cursor()
+        
+        # Identity & Auth
+        c.execute("""CREATE TABLE IF NOT EXISTS app_users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            full_name TEXT, email TEXT, phone TEXT, password_hash TEXT,
+            account_status TEXT DEFAULT 'Active',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_login_at TEXT
+        )""")
+        
+        c.execute("""CREATE TABLE IF NOT EXISTS user_broker_connections (
+            connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            broker_name TEXT NOT NULL,
+            broker_client_id TEXT,
+            access_token_encrypted TEXT,
+            refresh_token_encrypted TEXT,
+            expires_at TEXT,
+            connected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            is_active INTEGER DEFAULT 1,
+            metadata_json TEXT,
+            UNIQUE (user_id, broker_name)
+        )""")
+
+        # Scans & Tracking
+        c.execute("""CREATE TABLE IF NOT EXISTS scans (
+            scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            universe TEXT, scan_type TEXT, status TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS scan_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id INTEGER,
+            symbol TEXT, scheme_code TEXT, category TEXT,
+            score REAL, price REAL,
+            integrity_label TEXT, drift_status TEXT, drift_message TEXT,
+            UNIQUE (scan_id, symbol, scheme_code)
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS mf_scan_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            scheme_code TEXT NOT NULL,
+            scheme_name TEXT,
+            scan_date   TEXT NOT NULL DEFAULT CURRENT_DATE,
+            result_json TEXT,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scheme_code, scan_date)
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS algo_trade_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            strategy_name TEXT, symbol TEXT, action TEXT,
+            details TEXT, status TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS audit_logs (
+            timestamp TEXT, action TEXT, universe TEXT, details TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS scan_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_timestamp TEXT,
+            symbol TEXT,
+            conviction_score REAL,
+            regime TEXT,
+            sub_scores TEXT,
+            raw_data TEXT
+        )""")
+        
+        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history(scan_timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history(symbol)")
+        
+        # Migrations for existing DBs
+        try: c.execute("ALTER TABLE app_users ADD COLUMN password_hash TEXT")
+        except Exception: pass
+        try: c.execute("ALTER TABLE user_broker_connections ADD COLUMN broker_client_id TEXT")
+        except Exception: pass
+        
+        conn.commit()
+
+
+def _serialize_json(value: Optional[Dict[str, Any]]) -> str:
+    return json.dumps(value or {})
+
+
+def _deserialize_json(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return {}
+
+
+def upsert_app_user(
+    username: str,
+    full_name: str = "",
+    email: str = "",
+    phone: str = "",
+    account_status: str = "Active",
+    password: Optional[str] = None,
+):
+    from utils.security import hash_password
+
+    if _can_use_neon():
+        _ensure_app_users_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS app_users (
+                    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    full_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    password_hash TEXT,
+                    account_status TEXT DEFAULT 'Active',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_login_at TEXT
+                )"""
+            )
+
+    payload = {
+        "username": username.strip(),
+        "full_name": full_name,
+        "email": email,
+        "phone": phone,
+        "account_status": account_status,
+        "password_hash": hash_password(password) if password else None,
+    }
+
+    if _can_use_neon():
+        password_sql = ", password_hash = :password_hash" if password else ""
+        _exec(
+            f"""
+            INSERT INTO app_users (username, full_name, email, phone, account_status, password_hash)
+            VALUES (:username, :full_name, :email, :phone, :account_status, :password_hash)
+            ON CONFLICT (username) DO UPDATE SET
+                full_name = EXCLUDED.full_name,
+                email = EXCLUDED.email,
+                phone = EXCLUDED.phone,
+                account_status = EXCLUDED.account_status
+                {password_sql}
+            """,
+            payload,
         )
         return
 
     with _sqlite_connection() as conn:
-        c = conn.cursor()
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scans (
-                scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                universe TEXT,
-                scan_type TEXT,
-                status TEXT
-            )"""
+        password_sql = ", password_hash = :password_hash" if password else ""
+        conn.execute(
+            f"""
+            INSERT INTO app_users (username, full_name, email, phone, account_status, password_hash)
+            VALUES (:username, :full_name, :email, :phone, :account_status, :password_hash)
+            ON CONFLICT (username) DO UPDATE SET
+                full_name = excluded.full_name,
+                email = excluded.email,
+                phone = excluded.phone,
+                account_status = excluded.account_status
+                {password_sql}
+            """,
+            payload,
         )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                scheme_code TEXT,
-                category TEXT,
-                score REAL,
-                price REAL,
-                integrity_label TEXT,
-                drift_status TEXT,
-                drift_message TEXT
-            )"""
+
+
+def get_app_user(username: str) -> Dict[str, Any]:
+    df = _read_df(
+        "SELECT * FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username.strip()},
+        ttl="30s",
+    )
+    if df.empty:
+        return {}
+    return df.iloc[0].to_dict()
+
+
+def record_user_login(username: str):
+    upsert_app_user(username=username)
+    if _can_use_neon():
+        _exec(
+            "UPDATE app_users SET last_login_at = NOW() WHERE username = :username",
+            {"username": username.strip()},
         )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS fund_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                alpha REAL,
-                beta REAL,
-                te REAL,
-                sortino REAL,
-                max_dd REAL,
-                win_rate REAL,
-                upside REAL,
-                downside REAL,
-                cagr REAL
-            )"""
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            "UPDATE app_users SET last_login_at = CURRENT_TIMESTAMP WHERE username = :username",
+            {"username": username.strip()},
         )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                alert_type TEXT,
-                severity TEXT,
-                message TEXT,
-                timestamp TEXT
-            )"""
+
+
+def _get_user_id(username: str) -> Optional[int]:
+    df = _read_df(
+        "SELECT user_id FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username.strip()},
+        ttl="30s",
+    )
+    if df.empty:
+        return None
+    return int(df.iloc[0]["user_id"])
+
+
+def verify_user_credentials(username: str, password: str) -> bool:
+    """Verify credentials with a single DB round-trip."""
+    from utils.security import hash_password
+
+    df = _read_df(
+        "SELECT password_hash FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username.strip()},
+        ttl="5s",
+    )
+    if df.empty:
+        return False
+    stored_hash = df.iloc[0].get("password_hash")
+    if not stored_hash:
+        return False
+    return stored_hash == hash_password(password)
+
+
+
+def delete_app_user(username: str) -> None:
+    """Permanently deletes a user account and all associated data (broker connections, orders)."""
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+
+    if _can_use_neon():
+        _exec("DELETE FROM user_broker_connections WHERE user_id = :uid", {"uid": user_id})
+        _exec("DELETE FROM fortress_orders WHERE user_id = :uid", {"uid": user_id})
+        _exec("DELETE FROM app_users WHERE user_id = :uid", {"uid": user_id})
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute("DELETE FROM user_broker_connections WHERE user_id = :uid", {"uid": user_id})
+        conn.execute("DELETE FROM fortress_orders WHERE user_id = :uid", {"uid": user_id})
+        conn.execute("DELETE FROM app_users WHERE user_id = :uid", {"uid": user_id})
+        conn.commit()
+
+
+def list_user_broker_connections(username: str) -> pd.DataFrame:
+    if _can_use_neon():
+        _ensure_user_broker_connections_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS user_broker_connections (
+                    connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    broker_name TEXT NOT NULL,
+                    broker_client_id TEXT,
+                    access_token_encrypted TEXT,
+                    refresh_token_encrypted TEXT,
+                    expires_at TEXT,
+                    connected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER DEFAULT 1,
+                    metadata_json TEXT,
+                    UNIQUE (user_id, broker_name)
+                )"""
+            )
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return pd.DataFrame()
+
+    df = _read_df(
+        """
+        SELECT connection_id, broker_name, expires_at, connected_at, updated_at, is_active, metadata_json
+        FROM user_broker_connections
+        WHERE user_id = :user_id
+        ORDER BY connected_at DESC
+        """,
+        {"user_id": user_id},
+        ttl="30s",
+    )
+    if df.empty:
+        return df
+    if "metadata_json" in df.columns:
+        df["metadata_json"] = df["metadata_json"].apply(_deserialize_json)
+    return df
+
+def delete_user_broker_connection(username: str, broker_name: str) -> None:
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+    _exec(
+        "DELETE FROM user_broker_connections WHERE user_id = :user_id AND broker_name = :broker_name",
+        {"user_id": user_id, "broker_name": broker_name},
+    )
+
+def upsert_user_broker_connection(
+    username: str,
+    broker_name: str,
+    access_token: str,
+    broker_client_id: str = "",
+    expires_at: Optional[str] = None,
+    refresh_token: str = "",
+    is_active: bool = True,
+    metadata: Optional[Dict[str, Any]] = None,
+):
+    upsert_app_user(username=username)
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+
+    payload = {
+        "user_id": user_id,
+        "broker_name": broker_name,
+        "broker_client_id": broker_client_id,
+        "access_token_encrypted": _encrypt_token(access_token),
+        "refresh_token_encrypted": _encrypt_token(refresh_token),
+        "expires_at": expires_at,
+        "is_active": is_active,
+        "metadata_json": _serialize_json(metadata),
+    }
+
+    if _can_use_neon():
+        _exec(
+            """
+            INSERT INTO user_broker_connections (
+                user_id, broker_name, broker_client_id, access_token_encrypted, refresh_token_encrypted,
+                expires_at, connected_at, updated_at, is_active, metadata_json
+            )
+            VALUES (
+                :user_id, :broker_name, :broker_client_id, :access_token_encrypted, :refresh_token_encrypted,
+                :expires_at, NOW(), NOW(), :is_active, CAST(:metadata_json AS JSONB)
+            )
+            ON CONFLICT (user_id, broker_name) DO UPDATE SET
+                broker_client_id = EXCLUDED.broker_client_id,
+                access_token_encrypted = EXCLUDED.access_token_encrypted,
+                refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+                expires_at = EXCLUDED.expires_at,
+                updated_at = NOW(),
+                is_active = EXCLUDED.is_active,
+                metadata_json = EXCLUDED.metadata_json
+            """,
+            payload,
         )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS benchmark_history (
-                ticker TEXT,
-                date TEXT,
-                close REAL,
-                ret REAL,
-                PRIMARY KEY (ticker, date)
-            )"""
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_broker_connections (
+                user_id, broker_name, broker_client_id, access_token_encrypted, refresh_token_encrypted,
+                expires_at, is_active, metadata_json
+            )
+            VALUES (:user_id, :broker_name, :broker_client_id, :access_token_encrypted, :refresh_token_encrypted, :expires_at, :is_active, :metadata_json)
+            ON CONFLICT (user_id, broker_name) DO UPDATE SET
+                broker_client_id = excluded.broker_client_id,
+                access_token_encrypted = excluded.access_token_encrypted,
+                refresh_token_encrypted = excluded.refresh_token_encrypted,
+                expires_at = excluded.expires_at,
+                updated_at = CURRENT_TIMESTAMP,
+                is_active = excluded.is_active,
+                metadata_json = excluded.metadata_json
+            """,
+            payload,
         )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_commodities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                global_price REAL,
-                local_price REAL,
-                usd_inr REAL,
-                parity_price REAL,
-                spread REAL,
-                arb_yield REAL,
-                action_label TEXT
-            )"""
+
+
+def deactivate_user_broker_connection(username: str, broker_name: str):
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+    params = {"user_id": user_id, "broker_name": broker_name}
+    if _can_use_neon():
+        _exec(
+            """
+            UPDATE user_broker_connections
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE user_id = :user_id AND broker_name = :broker_name
+            """,
+            params,
         )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS algo_trade_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                strategy_name TEXT,
-                symbol TEXT,
-                action TEXT,
-                details TEXT,
-                status TEXT
-            )"""
+        return
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            UPDATE user_broker_connections
+            SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = :user_id AND broker_name = :broker_name
+            """,
+            params,
         )
-        c.execute("""CREATE TABLE IF NOT EXISTS audit_logs (timestamp TEXT, action TEXT, universe TEXT, details TEXT)""")
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_history_details (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                raw_data TEXT
-            )"""
+
+
+def get_broker_access_token(username: str, broker_name: str) -> str:
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return ""
+    df = _read_df(
+        """
+        SELECT access_token_encrypted
+        FROM user_broker_connections
+        WHERE user_id = :user_id AND broker_name = :broker_name AND is_active = :is_active
+        LIMIT 1
+        """,
+        {"user_id": user_id, "broker_name": broker_name, "is_active": True if _can_use_neon() else 1},
+        ttl="30s",
+    )
+    if df.empty:
+        return ""
+    return _decrypt_token(str(df.iloc[0]["access_token_encrypted"]))
+
+
+def create_fortress_order(
+    username: str,
+    symbol: str,
+    order_type: str,
+    quantity: float,
+    price: Optional[float],
+    status: str,
+    broker_name: str,
+    stock_name: str = "",
+    broker_order_id: str = "",
+    notes: str = "",
+):
+    if _can_use_neon():
+        _ensure_fortress_orders_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS fortress_orders (
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    stock_name TEXT,
+                    order_type TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL,
+                    status TEXT DEFAULT 'Pending',
+                    broker_name TEXT,
+                    broker_order_id TEXT,
+                    notes TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+    upsert_app_user(username=username)
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+    payload = {
+        "user_id": user_id,
+        "symbol": symbol,
+        "stock_name": stock_name or symbol,
+        "order_type": order_type,
+        "quantity": quantity,
+        "price": price,
+        "status": status,
+        "broker_name": broker_name,
+        "broker_order_id": broker_order_id,
+        "notes": notes,
+    }
+    if _can_use_neon():
+        _exec(
+            """
+            INSERT INTO fortress_orders (
+                user_id, symbol, stock_name, order_type, quantity, price, status,
+                broker_name, broker_order_id, notes, created_at, updated_at
+            )
+            VALUES (
+                :user_id, :symbol, :stock_name, :order_type, :quantity, :price, :status,
+                :broker_name, :broker_order_id, :notes, NOW(), NOW()
+            )
+            """,
+            payload,
         )
-        # TEMP DISABLE SQLITE SCHEMA ALTER - waiting for _sqlite_has_column fix
-        try:
-            # if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
-            #    c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
-            pass
-        except Exception as e:
-            logger.warning(f"SQLite column check/add failed: {e}")
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_timestamp TEXT,
-                symbol TEXT,
-                conviction_score REAL,
-                regime TEXT,
-                sub_scores TEXT,
-                raw_data TEXT
-            )"""
+        return
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO fortress_orders (
+                user_id, symbol, stock_name, order_type, quantity, price, status,
+                broker_name, broker_order_id, notes
+            )
+            VALUES (
+                :user_id, :symbol, :stock_name, :order_type, :quantity, :price, :status,
+                :broker_name, :broker_order_id, :notes
+            )
+            """,
+            payload,
         )
-        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history(scan_timestamp)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history(symbol)")
+
+
+def fetch_fortress_orders(
+    username: str,
+    status: Optional[str] = None,
+    broker_name: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> pd.DataFrame:
+    if _can_use_neon():
+        _ensure_fortress_orders_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS fortress_orders (
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    stock_name TEXT,
+                    order_type TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL,
+                    status TEXT DEFAULT 'Pending',
+                    broker_name TEXT,
+                    broker_order_id TEXT,
+                    notes TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return pd.DataFrame()
+
+    conditions = ["user_id = :user_id"]
+    params: Dict[str, Any] = {"user_id": user_id}
+    if status and status != "All":
+        conditions.append("status = :status")
+        params["status"] = status
+    if broker_name and broker_name != "All":
+        conditions.append("broker_name = :broker_name")
+        params["broker_name"] = broker_name
+    if date_from:
+        conditions.append("created_at >= :date_from")
+        params["date_from"] = date_from
+    if date_to:
+        conditions.append("created_at <= :date_to")
+        params["date_to"] = date_to
+
+    query = f"""
+    SELECT order_id, symbol, stock_name, order_type, quantity, price, status, broker_name, broker_order_id, notes, created_at, updated_at
+    FROM fortress_orders
+    WHERE {' AND '.join(conditions)}
+    ORDER BY created_at DESC
+    """
+    return _read_df(query, params, ttl="30s")
 
 
 def _infer_sql_type(series):
@@ -1235,6 +1823,53 @@ def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
         logger.error("fetch_mf_cached_results error: %s", e)
         return pd.DataFrame()
 
+def fetch_top_mf_picks(max_age_days: int = 31) -> pd.DataFrame:
+    """Return ONLY the Top 5 strongest schemes partitioned securely by Sub Category using DB engine logic."""
+    if not _can_use_neon():
+        # SQLite Fallback Window Function (SQLite 3.25+)
+        sql = f"""
+            SELECT result_json FROM (
+                SELECT result_json,
+                       ROW_NUMBER() OVER(
+                           PARTITION BY json_extract(result_json, '$.Category'), json_extract(result_json, '$."Sub Category"') 
+                           ORDER BY CAST(json_extract(result_json, '$."Conviction Score"') AS NUMERIC) DESC
+                       ) as rn
+                FROM mf_scan_results
+                WHERE scan_date >= date('now', '-{max_age_days} days')
+            ) sub
+            WHERE rn <= 5
+        """
+        try:
+            df = _read_df(sql)
+            if df.empty: return pd.DataFrame()
+            rows = [json.loads(r) if isinstance(r, str) else r for r in df["result_json"]]
+            return pd.DataFrame(rows)
+        except Exception as e:
+            logger.error("SQLite top picks failed (maybe old SQLite version): %s", e)
+            return pd.DataFrame()
+    
+    # Postgres Neon
+    try:
+        sql = f"""
+            SELECT result_json FROM (
+                SELECT result_json,
+                       ROW_NUMBER() OVER(
+                           PARTITION BY result_json->>'Category', result_json->>'Sub Category' 
+                           ORDER BY CAST(result_json->>'Conviction Score' AS NUMERIC) DESC
+                       ) as rn
+                FROM mf_scan_results
+                WHERE scan_date >= CURRENT_DATE - INTERVAL '{max_age_days} days'
+            ) sub
+            WHERE rn <= 5
+        """
+        df = _read_df(sql)
+        if df.empty: return pd.DataFrame()
+        rows = [json.loads(r) if isinstance(r, str) else r for r in df["result_json"]]
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error("fetch_top_mf_picks error: %s", e)
+        return pd.DataFrame()
+
 
 def upsert_mf_scan_results(df: pd.DataFrame):
     """Persist a full MF scan result DataFrame into Neon (one row per scheme, monthly UPSERT)."""
@@ -1243,7 +1878,17 @@ def upsert_mf_scan_results(df: pd.DataFrame):
     try:
         for _, row in df.iterrows():
             record = row.to_dict()
-            record = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in record.items()}
+            # Sanitize NaN and Infinity values (invalid in JSON/JSONB)
+            sanitized = {}
+            for k, v in record.items():
+                if isinstance(v, float):
+                    if math.isnan(v) or math.isinf(v):
+                        sanitized[k] = None
+                    else:
+                        sanitized[k] = v
+                else:
+                    sanitized[k] = v
+            record = sanitized
             scheme_code = str(record.get("Scheme Code") or record.get("scheme_code") or "UNKNOWN")
             scheme_name = str(record.get("Scheme") or record.get("scheme_name") or "")
             payload = json.dumps(record, default=str)

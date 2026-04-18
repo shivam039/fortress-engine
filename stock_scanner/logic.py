@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import datetime
+import logging
+import time
 import streamlit as st
 import yfinance as yf
 from fortress_config import (
@@ -13,6 +15,8 @@ from fortress_config import (
     TICKER_GROUPS,
 )
 from datetime import datetime
+
+_logger = logging.getLogger("fortress.scanner")
 
 # From development-db: Neon compatibility
 try:
@@ -37,8 +41,10 @@ DEFAULT_SCORING_CONFIG = {
 }
 
 REGIME_LABELS = {
+    "Strong Bull": "🟢🟢 Strong Bull",
     "Bull": "🟢 Bull",
     "Range": "🟡 Range",
+    "Caution": "🟠 Caution",
     "Bear": "🔴 Bear",
 }
 
@@ -53,19 +59,41 @@ def _safe_float(value, default=0.0):
 
 @st.cache_data(ttl="10m")
 def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
-    """Cached market data fetch to reduce repeated Yahoo calls across reruns."""
-    data = yf.download(symbol, period=period, interval=interval, group_by=group_by, progress=False, auto_adjust=False)
-    if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
-        data.columns = data.columns.get_level_values(0)
-    return data
+    """Cached market data fetch with exponential-backoff retry on transient Yahoo failures."""
+    for attempt in range(3):
+        try:
+            data = yf.download(
+                symbol, period=period, interval=interval,
+                group_by=group_by, progress=False, auto_adjust=False,
+            )
+            if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
+                data.columns = data.columns.get_level_values(0)
+            if not data.empty:
+                return data
+        except Exception as e:
+            _logger.warning(f"yfinance get_stock_data attempt {attempt+1}/3 failed for {symbol}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, then 2s
+    _logger.error(f"yfinance get_stock_data exhausted retries for {symbol}")
+    return pd.DataFrame()
 
 
 @st.cache_data(ttl="10m")
 def _download_close_series(symbol, period="1y", interval="1d"):
-    bench = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
-    if isinstance(bench.columns, pd.MultiIndex):
-        bench.columns = bench.columns.get_level_values(0)
-    return bench.get("Close", pd.Series(dtype=float)).dropna()
+    """Download close price series with exponential-backoff retry."""
+    for attempt in range(3):
+        try:
+            bench = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+            if isinstance(bench.columns, pd.MultiIndex):
+                bench.columns = bench.columns.get_level_values(0)
+            series = bench.get("Close", pd.Series(dtype=float)).dropna()
+            if not series.empty:
+                return series
+        except Exception as e:
+            _logger.warning(f"yfinance _download_close_series attempt {attempt+1}/3 failed for {symbol}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    return pd.Series(dtype=float)
 
 
 _INFO_CACHE = {}
@@ -156,7 +184,8 @@ def _get_benchmark_series(symbol):
         close = _download_close_series(symbol)
         _BENCHMARK_CACHE[symbol] = close
         return close
-    except:
+    except Exception as e:
+        _logger.warning(f"_get_benchmark_series failed for {symbol}: {e}")
         return pd.Series(dtype=float)
 
 
@@ -237,13 +266,14 @@ def _apply_quality_gates(df, cfg):
     market_cap_col = "Market_Cap_Cr" if "Market_Cap_Cr" in df.columns else None
     debt_col = "Debt_To_Equity" if "Debt_To_Equity" in df.columns else None
     gate_conditions = {
-        f"Liquidity<{cfg['liquidity_cr_min']}Cr": pd.to_numeric(df.get("Avg_Value_20D_Cr", np.nan), errors="coerce") <= cfg["liquidity_cr_min"],
-        f"Price<{cfg['price_min']}": pd.to_numeric(df.get("Price", np.nan), errors="coerce") <= cfg["price_min"],
+        # Strict less-than: a stock at exactly the threshold should PASS, not FAIL
+        f"Liquidity<{cfg['liquidity_cr_min']}Cr": pd.to_numeric(df.get("Avg_Value_20D_Cr", np.nan), errors="coerce") < cfg["liquidity_cr_min"],
+        f"Price<{cfg['price_min']}": pd.to_numeric(df.get("Price", np.nan), errors="coerce") < cfg["price_min"],
     }
     if market_cap_col:
-        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") <= cfg["market_cap_cr_min"]
+        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") < cfg["market_cap_cr_min"]
     if debt_col:
-        gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
+        gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") > cfg["max_debt_to_equity"]
 
     # Fix: Ensure Liquidity_Flag is treated as Series and handle missing values safely
     if "Liquidity_Flag" in df.columns:
@@ -292,7 +322,8 @@ def apply_advanced_scoring(df, scoring_config=None):
         conviction_z = conviction_raw.groupby(df["Sector"]).transform(_sector_zscore).fillna(0.0)
         df["Sector_RSI_Z"] = rsi_z.round(3)
         df["Sector_Conviction_Z"] = conviction_z.round(3)
-        df["Context_Raw"] += ((rsi_z + conviction_z) * 5.0)
+        # Clip z-scores to ±2σ to prevent outliers from distorting cross-sector ranking
+        df["Context_Raw"] += ((rsi_z.clip(-2, 2) + conviction_z.clip(-2, 2)) * 5.0)
 
     # Normalize category sub-scores within scan universe
     df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
@@ -300,14 +331,8 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Sentiment_Score"] = _normalize_series(df.get("Sentiment_Raw", 50)).round(2)
     df["Context_Score"] = _normalize_series(df.get("Context_Raw", 50)).round(2)
 
-    # Why: RSI tiers reduce false positives by rewarding healthy momentum instead of exhaustion.
-    rsi = pd.to_numeric(df.get("RSI", np.nan), errors="coerce")
-    rsi_bonus = np.select(
-        [rsi.between(45, 65, inclusive="both"), rsi.between(40, 72, inclusive="both")],
-        [15, 8],
-        default=0,
-    )
-    df["Technical_Score"] = (df["Technical_Score"] + rsi_bonus).clip(lower=0, upper=100)
+    # RSI influence flows through technical_raw → Technical_Score normalization.
+    # Post-normalization RSI bonus removed to prevent double-counting with check_institutional_fortress.
 
     # RS ranking and top quartile bonus
     rs_base = pd.to_numeric(df.get("RS_6M", df.get("RS_Composite", np.nan)), errors="coerce")
@@ -405,7 +430,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             adx_df = ta.adx(high, low, close, 14)
             adx_col = [c for c in adx_df.columns if c.startswith("ADX_")][0]
             adx_val = _safe_float(adx_df[adx_col].iloc[-1])
-        except:
+        except Exception as e:
+            _logger.debug(f"{ticker} ADX computation skipped: {e}")
             adx_val = 0.0
 
         # 52-Week High Calculation
@@ -471,12 +497,21 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         try:
             # Optimized: Use cached news fetch
             news = _get_ticker_news(ticker) or []
-            titles = " ".join(n.get("title","").lower() for n in news[:5])
-            if any(k in titles for k in ["fraud","investigation","default","bankruptcy","scam","legal"]):
+            _BLACK_SWAN_TERMS = {
+                "fraud", "investigation", "default", "bankruptcy", "scam",
+                "class action", "sebi notice", "ed raid", "fir filed", "money laundering",
+            }
+            _FALSE_POSITIVE_GUARDS = {"victory", "compliance", "cleared", "acquit", "legal win", "no wrongdoing"}
+            combined_text = " ".join(
+                f"{n.get('title', '')} {n.get('summary', '')}".lower() for n in news[:10]
+            )
+            if (any(k in combined_text for k in _BLACK_SWAN_TERMS) and
+                    not any(fp in combined_text for fp in _FALSE_POSITIVE_GUARDS)):
                 news_sentiment = "🚨 BLACK SWAN"
                 score_mod -= 40
                 black_swan_flag = 1
-        except: pass
+        except Exception as e:
+            _logger.debug(f"{ticker} news/black-swan check: {e}")
         try:
             # Optimized: Use cached calendar fetch
             cal = _get_ticker_calendar(ticker)
@@ -486,7 +521,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 if 0<=days_to<=7:
                     event_status = f"🚨 EARNINGS ({next_date.strftime('%d-%b')})"
                     score_mod -= 20
-        except: pass
+        except Exception as e:
+            _logger.debug(f"{ticker} calendar/earnings-risk check: {e}")
 
         analyst_count = target_high = target_low = target_median = target_mean = 0
         market_cap_cr = debt_to_equity = interest_coverage = 0.0
@@ -504,7 +540,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             market_cap_cr = _safe_info_float(info, "marketCap", 0.0) / 1e7
             debt_to_equity = _safe_info_float(info, "debtToEquity", 0.0)
             interest_coverage = _safe_info_float(info, "interestCoverage", 0.0)
-        except: pass
+        except Exception as e:
+            _logger.debug(f"{ticker} analyst/info fetch: {e}")
 
         try:
             # Optimized: Use cached earnings fetch
@@ -514,28 +551,31 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 earnings_ts = earnings.sort_index(ascending=False).index[0]
                 earnings_surprise = _safe_float(latest.get("Surprise(%)", 0.0), default=0.0)
                 negative_earnings_surprise = earnings_surprise < 0
-        except:
-            pass
+        except Exception as e:
+            _logger.debug(f"{ticker} earnings dates fetch: {e}")
 
         if tech_base:
             conviction += 50
             if perfect_alignment:
                 conviction += 15 # True alignment reward
                 
-            if 48<=rsi<=62: conviction+=20
-            elif 40<=rsi<=72: conviction+=10
-            
-            # ADX trend strength filter
-            if adx_val > 25:
-                conviction += 12
-            elif adx_val > 0 and adx_val < 20:
-                conviction -= 15 # Choppy penalty
+            # ADX trend strength: tiered to capture emerging → confirmed trend
+            if adx_val >= 30:
+                conviction += 15  # Strong confirmed trend
+            elif adx_val >= 25:
+                conviction += 12  # Trend building
+            elif adx_val >= 20:
+                conviction += 5   # Emerging trend (previously a dead zone)
+            elif adx_val > 0:
+                conviction -= 15  # Choppy / trendless market
 
-            # 52-week overhead resistance
-            if distance_to_high_pct < 10:
-                conviction += 10 # Near ATH sky
+            # 52-week distance: 3-tier to distinguish breakout vs consolidation vs resistance
+            if distance_to_high_pct < 5:
+                conviction += 15  # Near ATH — breakout zone
+            elif distance_to_high_pct < 15:
+                conviction += 8   # Healthy consolidation within striking range
             elif distance_to_high_pct > 35:
-                conviction -= 10 # Heavy resistance
+                conviction -= 10  # Heavy overhead resistance
                 
             conviction += score_mod
 
@@ -553,11 +593,15 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         except:
             rs_score = 0.0
 
-        if rs_score > 0:
-            conviction += 15
+        # Tiered RS conviction: magnitude of outperformance matters
+        if rs_score > 5:
+            conviction += 18   # Strong outperformer vs Nifty
+        elif rs_score > 0:
+            conviction += 8    # Mild outperformer
+        elif rs_score < -3:
+            conviction -= 10   # Meaningful underperformer
 
-        # Multi-horizon RS
-        benchmark_close = _get_benchmark_series(NIFTY_SYMBOL)
+        # Multi-horizon RS — reuse benchmark_close already fetched above
         rs_3m = _return_ratio(close, 63) / max(_return_ratio(benchmark_close, 63), 1e-6)
         rs_6m = _return_ratio(close, 126) / max(_return_ratio(benchmark_close, 126), 1e-6)
         rs_12m = _return_ratio(close, 252) / max(_return_ratio(benchmark_close, 252), 1e-6)
@@ -576,10 +620,13 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         # Volatility contraction (VCP-like)
         volume_dry_up = _safe_float(volume.tail(5).mean()) < avg_volume_20
         is_coiling = atr > 0 and atr100 > 0 and atr < (atr100 * 0.6) and volume_dry_up
-        if is_coiling:
-            conviction += 20 # True squeeze reward
+        # VCP bonus requires uptrend context + not too far from highs to be actionable
+        if is_coiling and tech_base and distance_to_high_pct < 30:
+            conviction += 20  # VCP: coiling in uptrend near highs = high-quality signal
+        elif is_coiling:
+            conviction += 5   # Coiling without trend context
         elif atr > 0 and atr100 > 0 and atr < (atr100 * 0.8):
-            conviction += 5 # Mild squeeze
+            conviction += 3   # Mild volatility contraction only
 
         # Mean reversion / over-extension guard
         extension_pct = ((price - ema50) / ema50) * 100 if ema50 > 0 else 0.0
@@ -622,8 +669,18 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         if earnings_ts is not None:
             days_ago = max((datetime.now().date() - earnings_ts.date()).days, 0)
             decay = 0.5 ** (days_ago / half_life_days)
-        sentiment_raw += 10 * decay
-        sentiment_raw -= 15 if negative_earnings_surprise else 0
+        # Graduated earnings surprise: magnitude + recency decay
+        if earnings_ts is not None:
+            if earnings_surprise < -20:
+                sentiment_raw -= 25 * decay   # Significant miss
+            elif earnings_surprise < 0:
+                sentiment_raw -= 12 * decay   # Small miss
+            elif earnings_surprise > 20:
+                sentiment_raw += 15 * decay   # Strong beat
+            elif earnings_surprise > 5:
+                sentiment_raw += 8 * decay    # Moderate beat
+            else:
+                sentiment_raw += 5 * decay    # In-line / no surprise data
 
         context_raw = 30.0
         context_raw += 20 if mtf_aligned else 0
@@ -648,7 +705,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 past_price = float(close.iloc[idx])
                 pct_change = ((price - past_price) / past_price) * 100
                 returns[f"Ret_{days}D"] = pct_change
-            except:
+            except Exception as e:
+                _logger.debug(f"{ticker} backtest return calc {days}D: {e}")
                 returns[f"Ret_{days}D"] = 0.0
 
         # --- Velocity & Strategy ---
@@ -725,7 +783,9 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Context_Raw": round(context_raw, 2),
             "Regime_Multiplier": round(regime_multiplier, 2)
         }
-    except: return None
+    except Exception as e:
+        _logger.warning(f"check_institutional_fortress failed for {ticker}: {e}")
+        return None
 
 
 def backtest_top_picks(scan_timestamp):

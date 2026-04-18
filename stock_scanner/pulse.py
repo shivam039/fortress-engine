@@ -99,6 +99,7 @@ def fetch_market_pulse_data():
     try:
         nifty_now = 0.0
         nifty_ema200 = 0.0
+        nifty_ema50 = 0.0
         vix_val = 20.0
 
         # Nifty Data
@@ -114,7 +115,9 @@ def fetch_market_pulse_data():
             nifty_close = nifty_df["Close"]
             nifty_now = nifty_close.iloc[-1]
             if len(nifty_close) >= 200:
-                nifty_ema200 = ta.ema(nifty_close, 200).iloc[-1]
+                nifty_ema200 = float(ta.ema(nifty_close, 200).iloc[-1])
+            if len(nifty_close) >= 50:
+                nifty_ema50 = float(ta.ema(nifty_close, 50).iloc[-1])
 
         # VIX Data
         if is_multi:
@@ -126,16 +129,17 @@ def fetch_market_pulse_data():
              # If we only fetched VIX (unlikely)
              vix_val = all_data["Close"].iloc[-1]
 
-        # Regime Logic
-        regime = "Range"
-        multiplier = 1.0
-
-        if nifty_now > nifty_ema200 and vix_val < 18:
-            regime = "Bull"
-            multiplier = 1.15
+        # 5-tier Regime Logic: EMA200 trend + EMA50 golden cross + VIX
+        if nifty_now > nifty_ema200 and nifty_ema50 > nifty_ema200 and vix_val < 15:
+            regime, multiplier = "Strong Bull", 1.25  # Golden cross + low fear
+        elif nifty_now > nifty_ema200 and vix_val <= 20:
+            regime, multiplier = "Bull", 1.10         # Above EMA200, contained VIX
+        elif nifty_now < nifty_ema200 and vix_val > 30:
+            regime, multiplier = "Bear", 0.65         # Below trend + high fear
         elif nifty_now < nifty_ema200 or vix_val > 25:
-            regime = "Bear"
-            multiplier = 0.85
+            regime, multiplier = "Caution", 0.80      # Trend breakdown or elevated risk
+        else:
+            regime, multiplier = "Range", 1.00        # Neither clearly bull nor bear
 
         out["regime"] = {
             "Market_Regime": regime,
@@ -161,7 +165,11 @@ def render_market_pulse(pulse_data):
     r_mult = regime.get("Regime_Multiplier", 1.0)
     r_vix = regime.get("VIX", 20.0)
 
-    color = "green" if r_label == "Bull" else "red" if r_label == "Bear" else "orange"
+    color_map = {
+        "Strong Bull": "#00C851", "Bull": "green",
+        "Range": "orange", "Caution": "#FF8800", "Bear": "red"
+    }
+    color = color_map.get(r_label, "orange")
     st.markdown(
         f"""
         <div style="padding: 10px; border-radius: 5px; background-color: rgba(128,128,128,0.1); border-left: 5px solid {color}; margin-bottom: 15px;">
@@ -190,3 +198,46 @@ def render_market_pulse(pulse_data):
                 col.caption(f"{metrics['status']} | RSI: {metrics['rsi']:.1f}")
     else:
         st.info("Benchmarks data unavailable.")
+
+
+def get_current_regime() -> dict:
+    """
+    Fetch current market regime without @st.cache_data — safe to call from FastAPI.
+    Uses the same 5-tier logic as fetch_market_pulse_data().
+    Returns: {"Market_Regime": str, "Regime_Multiplier": float, "VIX": float}
+    """
+    _default = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    try:
+        import yfinance as yf
+        data = yf.download(
+            ["^NSEI", "^INDIAVIX"], period="1y", interval="1d",
+            group_by="ticker", threads=True, progress=False, auto_adjust=False,
+        )
+        if not isinstance(data.columns, pd.MultiIndex):
+            return _default
+
+        nifty_close = data["^NSEI"]["Close"].dropna() if "^NSEI" in data.columns.levels[0] else pd.Series(dtype=float)
+        vix_close = data["^INDIAVIX"]["Close"].dropna() if "^INDIAVIX" in data.columns.levels[0] else pd.Series(dtype=float)
+
+        if nifty_close.empty:
+            return _default
+
+        nifty_now   = float(nifty_close.iloc[-1])
+        nifty_ema200 = float(ta.ema(nifty_close, 200).iloc[-1]) if len(nifty_close) >= 200 else 0.0
+        nifty_ema50  = float(ta.ema(nifty_close, 50).iloc[-1])  if len(nifty_close) >= 50  else 0.0
+        vix_val      = float(vix_close.iloc[-1]) if not vix_close.empty else 20.0
+
+        if nifty_now > nifty_ema200 and nifty_ema50 > nifty_ema200 and vix_val < 15:
+            regime, multiplier = "Strong Bull", 1.25
+        elif nifty_now > nifty_ema200 and vix_val <= 20:
+            regime, multiplier = "Bull", 1.10
+        elif nifty_now < nifty_ema200 and vix_val > 30:
+            regime, multiplier = "Bear", 0.65
+        elif nifty_now < nifty_ema200 or vix_val > 25:
+            regime, multiplier = "Caution", 0.80
+        else:
+            regime, multiplier = "Range", 1.00
+
+        return {"Market_Regime": regime, "Regime_Multiplier": multiplier, "VIX": vix_val}
+    except Exception:
+        return _default

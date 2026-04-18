@@ -1,4 +1,3 @@
-print("Loading commodities.ui ...")
 import logging
 from datetime import datetime
 
@@ -133,7 +132,7 @@ def render(broker_choice="Zerodha"):
     # ── Data table ───────────────────────────────────────────────────────
     with st.expander("📋 Full Data Table", expanded=False):
         show_cols = [c for c in DISPLAY_COLS if c in df.columns]
-        st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
+        st.dataframe(df[show_cols], width='stretch', hide_index=True)
 
     # ── Heatmap ────────────────────────────────────────────────────────
     with st.expander("🔥 Conviction & Spread Heatmap", expanded=False):
@@ -146,7 +145,7 @@ def render(broker_choice="Zerodha"):
             labels={"color": "Value"},
         )
         heat.update_xaxes(tickvals=list(range(len(df))), ticktext=df["Commodity"].tolist())
-        st.plotly_chart(heat, use_container_width=True)
+        st.plotly_chart(heat, width='stretch')
 
     # ── Price Momentum Chart ──────────────────────────────────────────────
     with st.expander("📈 Return Comparison", expanded=False):
@@ -161,7 +160,7 @@ def render(broker_choice="Zerodha"):
                 template="plotly_dark",
                 legend=dict(orientation="h", y=1.1),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     # ── Export ────────────────────────────────────────────────────────────
     st.download_button(
@@ -184,4 +183,4 @@ def render(broker_choice="Zerodha"):
 
     if debug_mode:
         st.markdown("### 🔍 Debug — Raw DataFrame")
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')

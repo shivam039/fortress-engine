@@ -6,4 +6,4 @@ except ImportError as e:
     print(f"Main Import failed: {e}")
 
 import commodities.ui
-print("Commodities UI imported.")
+
